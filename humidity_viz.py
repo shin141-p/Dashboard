@@ -67,37 +67,34 @@ def main():
                 )
                 
                 st.altair_chart(chart_dual, use_container_width=True)
+
+            st.divider()
+            st.subheader("睡眠統計 (直近1ヶ月)")
             
+            # 統計量の計算
+            mean_sleep = df_sleep['Sleep_Time'].mean()
+            std_sleep = df_sleep['Sleep_Time'].std()
+            
+            # 表形式で表示
+            st.table(pd.DataFrame({
+                '平均睡眠時間 (時間)': [f"{mean_sleep:.2f}"],
+                '標準偏差 (時間)': [f"{std_sleep:.2f}"]
+            }, index=['値']))
+
+            st.subheader("睡眠時間分布")
+            # ヒストグラム
+            hist = alt.Chart(df_sleep).mark_bar().encode(
+                alt.X("Sleep_Time", bin=alt.Bin(step=0.5), title="睡眠時間 (時間)"),
+                y=alt.Y('count()', title='頻度'),
+                tooltip=['count()']
+            ).properties(
+                title='睡眠時間の分布 (30分区切り)'
+            )
+            st.altair_chart(hist, use_container_width=True)
+
         except FileNotFoundError as e:
             st.warning(f"データファイルが見つかりません: {e.filename}")
             
-        st.divider()
-        st.subheader("睡眠記録")
-        
-        # 睡眠時間: カスタムUI
-        st.write("睡眠時間")
-        col_minus, col_disp, col_plus = st.columns([1, 2, 1])
-        
-        with col_minus:
-            if st.button("－", key="sleep_minus"):
-                st.session_state.sleep_time_val = max(0.0, st.session_state.sleep_time_val - 0.25)
-                
-        with col_plus:
-            if st.button("＋", key="sleep_plus"):
-                st.session_state.sleep_time_val = min(24.0, st.session_state.sleep_time_val + 0.25)
-                
-        with col_disp:
-            h = int(st.session_state.sleep_time_val)
-            m = int((st.session_state.sleep_time_val - h) * 60)
-            st.markdown(f"#### {h}h {m:02d}m")
-
-        sleep_quality = st.slider("睡眠の質 (1-5)", min_value=1, max_value=5, value=3)
-        
-        if st.button("睡眠データを保存", key="save_sleep"):
-            h_save = int(st.session_state.sleep_time_val)
-            m_save = int((st.session_state.sleep_time_val - h_save) * 60)
-            formatted_time = f"{h_save}h {m_save:02d}m"
-            st.success(f"睡眠データを保存しました: {date}, 時間: {formatted_time}, 質: {sleep_quality}")
 
     with tab_exercise:
         st.subheader("運動習慣の記録")
