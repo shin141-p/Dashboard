@@ -14,9 +14,7 @@ def main():
     if 'sleep_time_val' not in st.session_state:
         st.session_state.sleep_time_val = 7.0 # 7.0 hours
     
-    # 共通の日付入力
-    st.header('日次データ入力')
-    date = st.date_input("日付")
+
 
     with tab_sleep:
         st.subheader("睡眠データの分析")
@@ -139,7 +137,7 @@ def main():
         step_count = st.number_input("歩数", min_value=0, step=1000)
         
         if st.button("運動データを保存", key="save_exercise"):
-            st.success(f"運動データを保存しました: {date}, 歩数: {step_count}")
+            st.success(f"運動データを保存しました: 歩数: {step_count}")
 
 if __name__ == "__main__":
     main()
