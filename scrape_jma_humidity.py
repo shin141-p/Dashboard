@@ -95,6 +95,8 @@ def scrape_tokyo_humidity(year, month):
                     humidity_str = row[9]
                     # 気温はインデックス6にあります
                     temp_str = row[6]
+                    # 日照時間はインデックス16にあります
+                    sunshine_str = row[16]
                     
                     # 湿度の文字列が空でないか確認
                     if not humidity_str:
@@ -117,9 +119,13 @@ def scrape_tokyo_humidity(year, month):
 
                     humidity = extract_float(humidity_str)
                     temperature = extract_float(temp_str)
+                    sunshine = extract_float(sunshine_str)
                     
-                    if humidity is not None and temperature is not None:
-                        data.append((day, humidity, temperature))
+                    # sunshine could be 0.0, so checking "is not None" is important
+                    if humidity is not None and temperature is not None and sunshine is not None:
+                        # 日付フォーマットを作成 (YYYY/MM/DD)
+                        date_str = f"{year}/{month}/{day}"
+                        data.append((date_str, humidity, temperature, sunshine))
                         
                 except ValueError:
                     continue
@@ -135,20 +141,20 @@ if __name__ == "__main__":
     year = 2025
     month = 10
     
-    print(f"{year}年{month}月の東京都の湿度・気温データをスクレイピングします...")
+    print(f"{year}年{month}月の東京都の湿度・気温・日照時間データをスクレイピングします...")
     result = scrape_tokyo_humidity(year, month)
     
     if result:
-        print("\n日 | 平均湿度 (%) | 平均気温 (℃)")
-        print("---|--------------|-------------")
-        for day, hum, temp in result:
-            print(f"{day:2} | {hum:<12} | {temp}")
+        print("\n日付 | 平均湿度 (%) | 平均気温 (℃) | 日照時間 (h)")
+        print("-----------|--------------|--------------|-------------")
+        for date_str, hum, temp, sun in result:
+            print(f"{date_str:<10} | {hum:<12} | {temp:<12} | {sun}")
             
         # CSVファイルに保存
-        filename = f"tokyo_humidity_{year}_{month}.csv"
+        filename = "tokyo_humidity.csv"
         with open(filename, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(['Day', 'Avg_Humidity', 'Avg_Temperature'])
+            writer.writerow(['Date', 'Avg_Humidity', 'Avg_Temperature', 'Sunshine_Duration'])
             writer.writerows(result)
         print(f"\nファイルに保存しました: {filename}")
     else:

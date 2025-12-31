@@ -112,6 +112,21 @@ elif tab_selection == "総合":
 
         st.plotly_chart(fig, use_container_width=True)
 
+        # Correlation Scatter Plot
+        st.subheader("睡眠時間 vs 気象データ")
+        corr_metric = st.selectbox("比較する気象データ", ["平均湿度", "平均気温"], key="corr_metric")
+        
+        if corr_metric == "平均湿度":
+            y_col_corr = 'Avg_Humidity'
+            y_label_corr = '平均湿度 (%)'
+        else:
+            y_col_corr = 'Avg_Temperature'
+            y_label_corr = '平均気温 (℃)'
+
+        fig_corr = px.scatter(df_merged, x='sleep_duration_hour', y=y_col_corr,
+                              labels={'sleep_duration_hour': '睡眠時間 (時間)', y_col_corr: y_label_corr})
+        st.plotly_chart(fig_corr, use_container_width=True)
+
 
         # Heatmap
         st.subheader("集中力ヒートマップ")
