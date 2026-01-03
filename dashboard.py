@@ -119,7 +119,7 @@ h1, h2, h3 {
     st.title('睡眠時間ダッシュボード')
 
     # Sidebar Navigation
-    page = st.sidebar.radio("メニュー", ["ダッシュボード", "設定"])
+    page = st.sidebar.radio("メニュー", ["ダッシュボード", "設定", "データ入力"])
 
     import datetime
 
@@ -143,6 +143,36 @@ h1, h2, h3 {
         # Set value kwarg even with key to ensure default applies if key is new
         st.time_input("睡眠開始目標時間 (Target Start)", value=default_start, key="target_start_time")
         st.time_input("睡眠終了目標時間 (Target End)", value=default_end, key="target_end_time")
+
+    if page == "データ入力":
+        st.subheader("データアップロード")
+        st.write("CSVファイルをアップロードしてデータを更新します。形式は `data_tent.csv` と同じである必要があります。")
+        
+        uploaded_file = st.file_uploader("CSVファイルをドラッグ＆ドロップ", type="csv")
+        
+        if uploaded_file is not None:
+            try:
+                # Try reading the uploaded CSV
+                new_df = pd.read_csv(uploaded_file)
+                
+                # Validation: Check for required columns
+                # We base this on the structure of data_tent.csv
+                # It seems minimal requirements are '就寝時間' and '起床時間' for calculations,
+                # but let's check for a few key ones to ensure it's the right format.
+                required_cols = ['タイムスタンプ', '日付', '就寝時間', '起床時間']
+                
+                if all(col in new_df.columns for col in required_cols):
+                    # Save the file
+                    new_df.to_csv(DATA_FILE, index=False)
+                    st.success(f"データが正常に更新されました: {DATA_FILE}")
+                    st.write("プレビュー:")
+                    st.dataframe(new_df.head())
+                else:
+                    st.error(f"エラー: 必要なカラムが見つかりません。以下のカラムが必要です: {', '.join(required_cols)}")
+                    st.write("アップロードされたカラム:", new_df.columns.tolist())
+                    
+            except Exception as e:
+                st.error(f"ファイルの読み込みまたは保存中にエラーが発生しました: {e}")
 
     # Get current values for calculation
     target_start_str = st.session_state.target_start_time.strftime("%H:%M")
@@ -223,6 +253,7 @@ h1, h2, h3 {
                     
                     # Update hover template to show formatted time
                     fig.update_traces(hovertemplate='日付: %{x}<br>睡眠時間: %{text}')
+                    fig.update_xaxes(title=None)
                     return update_chart_layout(fig)
 
                 def display_weekly_quality_metrics():
@@ -266,6 +297,7 @@ h1, h2, h3 {
                     fig.update_traces(line_color='#E64A19', fillcolor='rgba(255, 87, 34, 0.3)') # Darker Orange/Red
                     # Update hover to use formatted debt
                     fig.update_traces(hovertemplate='日付: %{x}<br>睡眠負債: %{customdata[0]}')
+                    fig.update_xaxes(title=None)
                     return update_chart_layout(fig)
 
                 def create_sleep_histogram():
@@ -303,6 +335,7 @@ h1, h2, h3 {
                                       marker_size=8, marker_color='white', marker_line_color='#FF9800', marker_line_width=2,
                                       hovertemplate='日付: %{x}<br>睡眠時間: %{customdata[0]}')
                     
+                    fig.update_xaxes(title=None)
                     return update_chart_layout(fig)
 
                 def create_sleep_score_trend():
@@ -327,6 +360,7 @@ h1, h2, h3 {
                     # Set y-axis range 0-100 for percentage
                     fig.update_layout(yaxis_range=[0, 105])
                     
+                    fig.update_xaxes(title=None)
                     return update_chart_layout(fig)
 
                 # Create 3 rows of 2 columns
