@@ -1,0 +1,15 @@
+[theme]
+base = "light"
+
+# アクセント（ボタン・スライダーなど）
+primaryColor = "#8FB9A8"   # くすんだミントグリーン
+
+# 背景
+backgroundColor = "#F4F5F7"   # 薄いグレー
+secondaryBackgroundColor = "#FFFFFF"
+
+# 文字
+textColor = "#333333"
+
+# フォント
+font = "sans serif"
