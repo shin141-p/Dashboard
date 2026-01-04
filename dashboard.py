@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
 # Load the dataset
 # Adjust the path if necessary, but assuming it's in the same directory as per user usage
@@ -119,7 +120,7 @@ h1, h2, h3 {
     st.title('睡眠時間ダッシュボード')
 
     # Sidebar Navigation
-    page = st.sidebar.radio("メニュー", ["ダッシュボード", "設定", "データ入力"])
+    page = st.sidebar.radio("メニュー", ["ダッシュボード", "データ比較", "設定", "データ入力"])
 
     import datetime
 
@@ -148,6 +149,15 @@ h1, h2, h3 {
         st.subheader("データアップロード")
         st.write("CSVファイルをアップロードしてデータを更新します。形式は `data_tent.csv` と同じである必要があります。")
         
+        # Download Button
+        with open(DATA_FILE, "rb") as file:
+            st.download_button(
+                label="現在のCSVデータをダウンロード",
+                data=file,
+                file_name="data_tent_updated.csv",
+                mime="text/csv"
+            )
+
         uploaded_file = st.file_uploader("CSVファイルをドラッグ＆ドロップ", type="csv")
         
         if uploaded_file is not None:
@@ -174,6 +184,71 @@ h1, h2, h3 {
             except Exception as e:
                 st.error(f"ファイルの読み込みまたは保存中にエラーが発生しました: {e}")
 
+        # --- Manual Data Entry Form ---
+        st.write("---")
+        st.subheader("手動データ入力")
+        st.write("日々のデータを手動で追加します。")
+
+        with st.form("manual_entry_form"):
+            col_date, col_bed, col_wake, col_nap = st.columns(4)
+            with col_date:
+                input_date = st.date_input("日付", value=datetime.date.today())
+            with col_bed:
+                input_bedtime = st.time_input("就寝時間", value=datetime.time(23, 30))
+            with col_wake:
+                input_waketime = st.time_input("起床時間", value=datetime.time(7, 30))
+            with col_nap:
+                input_naptime = st.time_input("昼寝の時間", value=datetime.time(0, 0))
+
+            col_q1, col_q2, col_q3, col_count = st.columns(4)
+            with col_q1:
+                input_onset = st.slider("寝つきの良さ (1-5)", 1, 5, 3)
+            with col_q2:
+                input_wake_quality = st.slider("寝起きの良さ (1-5)", 1, 5, 3)
+            with col_q3:
+                input_drowsiness = st.slider("日中の眠気 (1-5)", 1, 5, 3)
+            with col_count:
+                input_wake_count = st.number_input("目が覚めた回数", min_value=0, value=0, step=1)
+
+            submitted = st.form_submit_button("データを追加")
+
+            if submitted:
+                # Prepare data
+                timestamp = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+                date_str = input_date.strftime("%Y/%m/%d")
+                bedtime_str = input_bedtime.strftime("%H:%M:%S")
+                waketime_str = input_waketime.strftime("%H:%M:%S")
+                naptime_str = input_naptime.strftime("%H:%M:%S")
+
+                new_data = {
+                    'タイムスタンプ': [timestamp],
+                    '日付': [date_str],
+                    '就寝時間': [bedtime_str],
+                    '起床時間': [waketime_str],
+                    '昼寝の時間': [naptime_str],
+                    '寝つきの良さ': [input_onset],
+                    '寝起きの良さ': [input_wake_quality],
+                    '日中の眠気': [input_drowsiness],
+                    '目が覚めた回数': [input_wake_count]
+                }
+                
+                new_row_df = pd.DataFrame(new_data)
+                
+                try:
+                    # Append to existing CSV
+                    # Read existing to check columns or just append
+                    # If file exists, append without header. If not, write with header.
+                    # But we trust DATA_FILE exists.
+                    new_row_df.to_csv(DATA_FILE, mode='a', header=False, index=False)
+                    st.success(f"データを追加しました: {date_str}")
+                    
+                    # Show the added data
+                    st.write("追加されたデータ:")
+                    st.dataframe(new_row_df)
+
+                except Exception as e:
+                    st.error(f"データの保存中にエラーが発生しました: {e}")
+
     # Get current values for calculation
     target_start_str = st.session_state.target_start_time.strftime("%H:%M")
     target_end_str = st.session_state.target_end_time.strftime("%H:%M")
@@ -183,6 +258,376 @@ h1, h2, h3 {
     # we can load data always or just for dashboard.
     # Let's load data always for now to safe check columns etc if needed, 
     # but only render dashboard if page == "ダッシュボード"
+
+    if page == "データ比較":
+        st.subheader("データ比較")
+        try:
+            df = pd.read_csv(DATA_FILE)
+            
+            # Preprocess
+            if '日付' in df.columns:
+                df['date_dt'] = pd.to_datetime(df['日付'], format='%Y/%m/%d')
+            
+            # Calculate sleep duration if needed
+            if '就寝時間' in df.columns and '起床時間' in df.columns:
+                 df['sleep_duration_hour'] = df.apply(calculate_sleep_duration, axis=1)
+            
+            # --- Date Selection ---
+            if 'date_dt' in df.columns and not df.empty:
+                min_date = df['date_dt'].min().date()
+                max_date = df['date_dt'].max().date()
+                
+                # Default to last 14 days
+                default_start = max(min_date, max_date - datetime.timedelta(days=13))
+                
+                st.write("### 期間選択")
+                date_range = st.date_input(
+                    "比較する期間を選択してください",
+                    value=(default_start, max_date),
+                    min_value=min_date,
+                    max_value=max_date
+                )
+                
+                # Filter Data
+                if len(date_range) == 2:
+                    start_sel, end_sel = date_range
+                    # Convert to datetime for comparison
+                    start_sel_dt = pd.Timestamp(start_sel)
+                    end_sel_dt = pd.Timestamp(end_sel)
+                    
+                    # Split into Selected and Others
+                    mask_selected = (df['date_dt'] >= start_sel_dt) & (df['date_dt'] <= end_sel_dt)
+                    df_selected = df[mask_selected].copy()
+                    df_others = df[~mask_selected].copy()
+                else:
+                    st.warning("開始日と終了日を選択してください。")
+                    df_selected = df.copy()
+                    df_others = pd.DataFrame()
+            else:
+                st.info("データがありません。")
+                df_selected = pd.DataFrame()
+                df_others = pd.DataFrame()
+
+
+            def create_reference_sleep_chart_for_df(target_df, chart_title, compact_view=False):
+                # Visualize sleep with Base 19:00 for a specific dataframe
+                
+                if target_df.empty or 'date_dt' not in target_df.columns or '就寝時間' not in target_df.columns or '起床時間' not in target_df.columns:
+                    return None
+
+                df_sorted = target_df.sort_values('date_dt').copy()
+                
+                dates = []
+                bases = []
+                heights = []
+                colors = []
+                texts = []
+                
+                BASE_HOUR = 19
+                
+                def adjust_hour(h):
+                    # Map 0..24 to 19..43 range
+                    if h < BASE_HOUR:
+                        return h + 24.0
+                    return h
+                
+                # Pre-calculate target range for gap bar
+                gap_base = BASE_HOUR
+                gap_height = 24.0
+                
+                if "target_start_time" in st.session_state and "target_end_time" in st.session_state:
+                    ts_val = st.session_state.target_start_time
+                    te_val = st.session_state.target_end_time
+                    
+                    ts_raw = ts_val.hour + ts_val.minute/60.0
+                    te_raw = te_val.hour + te_val.minute/60.0
+                    
+                    ts_adj = adjust_hour(ts_raw)
+                    te_adj = adjust_hour(te_raw)
+                    
+                    if te_adj < ts_adj:
+                        te_adj += 24.0
+                        
+                    gap_base = ts_adj
+                    gap_height = te_adj - ts_adj
+
+                # Iterate to build data, inserting gap if needed
+                prev_date = None
+                
+                for _, row in df_sorted.iterrows():
+                    current_date = row['date_dt']
+                    
+                    # Detect Gap (Only for compact view where we want to show a customized separator)
+                    if compact_view and prev_date is not None:
+                        delta = (current_date - prev_date).days
+                        if delta > 1:
+                            # Insert Separator
+                            dates.append("GAP") # Marker
+                            bases.append(gap_base)
+                            heights.append(gap_height)
+                            colors.append('#9E9E9E') # Darker Grey
+                            texts.append("期間外 (省略)")
+                    
+                    prev_date = current_date
+
+                    try:
+                        # Parse decimal hours
+                        b_dt = pd.to_datetime(row['就寝時間'], format='%H:%M:%S')
+                        w_dt = pd.to_datetime(row['起床時間'], format='%H:%M:%S')
+                        
+                        b_raw = b_dt.hour + b_dt.minute/60.0
+                        w_raw = w_dt.hour + w_dt.minute/60.0
+                        
+                        b_adj = adjust_hour(b_raw)
+                        w_adj = adjust_hour(w_raw)
+                        
+                        # current_date is used for X
+                        
+                        next_date = current_date + pd.Timedelta(days=1)
+                        
+                        if w_adj < b_adj:
+                            w_adj += 24.0
+                        
+                        limit = BASE_HOUR + 24.0
+                        
+                        if w_adj <= limit:
+                            dates.append(current_date)
+                            bases.append(b_adj)
+                            heights.append(w_adj - b_adj)
+                            colors.append('#FF9800')
+                            texts.append(f"{row['就寝時間']} - {row['起床時間']}")
+                        else:
+                            # Split
+                            dates.append(current_date)
+                            bases.append(b_adj)
+                            heights.append(limit - b_adj)
+                            colors.append('#FF9800')
+                            texts.append(f"{row['就寝時間']} - 19:00")
+                            
+                            dates.append(next_date)
+                            bases.append(BASE_HOUR) 
+                            heights.append(w_adj - 24.0 - BASE_HOUR) 
+                            colors.append('#FF9800')
+                            texts.append(f"19:00 - {row['起床時間']}")
+                            
+                    except Exception:
+                        continue
+                
+                # Process X-values
+                x_vals = []
+                if compact_view:
+                    xaxis_config = dict(
+                        title='日付',
+                        type='category',
+                        tickangle=-45
+                    )
+                    # Convert dates to strings, handling GAP
+                    unique_dates = []
+                    # Plotly bar charts group by X. If we have duplicate dates (split bars), it handles them.
+                    # But "GAP" string might be duplicated if we have multiple gaps? 
+                    # User likely selects one range -> 2 chunks of data -> 1 GAP.
+                    # If user selects middle, we have [Before] [GAP] [After].
+                    
+                    for d in dates:
+                        if d == "GAP":
+                            x_vals.append("...期間...")
+                        elif isinstance(d, pd.Timestamp):
+                            x_vals.append(d.strftime('%m/%d'))
+                        else:
+                             x_vals.append(str(d))
+                             
+                else:
+                     x_vals = dates
+                     xaxis_config = dict(
+                        title='日付',
+                        tickformat='%m/%d',
+                        tickangle=-45,
+                        range=None
+                     )
+                     if not df_sorted.empty:
+                         first_date = df_sorted['date_dt'].min() - pd.Timedelta(days=0.5)
+                         last_date = df_sorted['date_dt'].max() + pd.Timedelta(days=0.5)
+                         xaxis_config['range'] = [first_date, last_date]
+
+                fig = go.Figure()
+                
+                # Add Recommended Time Highlight (Background)
+                # Note: Background shape on categorical axis might behave differently?
+                # Shapes use xref='paper' for full width or 'x' for coordinates.
+                # If we use 'paper' (0 to 1), it covers the whole width regardless of axis type.
+                # So highlighting the Y-range across all X is fine.
+                
+                if "target_start_time" in st.session_state and "target_end_time" in st.session_state:
+                    ts_val = st.session_state.target_start_time
+                    te_val = st.session_state.target_end_time
+                    
+                    ts_raw = ts_val.hour + ts_val.minute/60.0
+                    te_raw = te_val.hour + te_val.minute/60.0
+                    
+                    ts_adj = adjust_hour(ts_raw)
+                    te_adj = adjust_hour(te_raw)
+                    
+                    if te_adj < ts_adj:
+                        te_adj += 24.0
+                    
+                    fig.add_shape(
+                       type="rect",
+                       x0=0, x1=1, xref="paper",
+                       y0=ts_adj, y1=te_adj, yref="y",
+                       fillcolor="rgba(135, 206, 235, 0.3)",
+                       line_width=0,
+                       layer="below"
+                    )
+
+                fig.add_trace(go.Bar(
+                    x=x_vals,
+                    y=heights,
+                    base=bases,
+                    marker_color=colors,
+                    hovertext=texts,
+                    hovertemplate='日付: %{x}<br>時間: %{hovertext}<extra></extra>'
+                ))
+
+                tick_vals = list(range(BASE_HOUR, BASE_HOUR + 18))
+                tick_text = [str(t % 24) + ":00" for t in tick_vals]
+                
+                fig.update_layout(
+                    title=chart_title,
+                    yaxis=dict(
+                        title='時間',
+                        range=[BASE_HOUR + 17, BASE_HOUR], 
+                        tickmode='array',
+                        tickvals=tick_vals,
+                        ticktext=tick_text,
+                        dtick=1
+                    ),
+                    xaxis=xaxis_config,
+                    showlegend=False,
+                    height=680
+                )
+                
+                fig = update_chart_layout(fig)
+                fig.update_layout(height=680)
+
+                return fig
+
+            def create_sleep_trend_chart_for_df(target_df, chart_title, compact_view=False):
+                # Visualize sleep duration trend for a specific dataframe
+                
+                if target_df.empty or 'date_dt' not in target_df.columns or 'sleep_duration_hour' not in target_df.columns:
+                    return None
+
+                df_sorted = target_df.sort_values('date_dt').copy()
+                
+                dates = []
+                durations = []
+                texts = []
+                
+                # Iterate to build data, inserting gap if needed
+                prev_date = None
+                
+                for _, row in df_sorted.iterrows():
+                    current_date = row['date_dt']
+                    duration = row['sleep_duration_hour']
+                    
+                    # Detect Gap (Only for compact view)
+                    if compact_view and prev_date is not None:
+                        delta = (current_date - prev_date).days
+                        if delta > 1:
+                            dates.append("GAP")
+                            durations.append(None) # Break the line
+                            texts.append("期間外")
+                    
+                    prev_date = current_date
+                    dates.append(current_date)
+                    durations.append(duration)
+                    texts.append(f"{duration:.1f}h")
+                
+                # Process X-values
+                x_vals = []
+                if compact_view:
+                    xaxis_config = dict(
+                        title='日付',
+                        type='category',
+                        tickangle=-45
+                    )
+                    
+                    for d in dates:
+                        if d == "GAP":
+                            x_vals.append("...期間...")
+                        elif isinstance(d, pd.Timestamp):
+                            x_vals.append(d.strftime('%m/%d'))
+                        else:
+                             x_vals.append(str(d))
+                             
+                else:
+                     x_vals = dates
+                     xaxis_config = dict(
+                        title='日付',
+                        tickformat='%m/%d',
+                        tickangle=-45
+                     )
+
+                fig = go.Figure()
+                
+                fig.add_trace(go.Scatter(
+                    x=x_vals,
+                    y=durations,
+                    mode='lines+markers',
+                    name='睡眠時間',
+                    marker=dict(color='#FF9800'),
+                    line=dict(color='#FF9800'),
+                    hovertext=texts,
+                    hovertemplate='日付: %{x}<br>睡眠時間: %{hovertext}<extra></extra>'
+                ))
+
+                fig.update_layout(
+                    title=chart_title,
+                    yaxis=dict(
+                        title='睡眠時間 (h)',
+                        dtick=1,
+                        range=[5, 10]
+                    ),
+                    xaxis=xaxis_config,
+                    showlegend=False,
+                    height=340
+                )
+                
+                fig = update_chart_layout(fig)
+                fig.update_layout(height=340)
+
+                return fig
+
+            # Layout for Comparison
+            c_sel, c_other = st.columns(2)
+            
+            with c_sel:
+                st.write("#### 選択期間")
+                fig_sel = create_reference_sleep_chart_for_df(df_selected, "睡眠チャート (選択期間)", compact_view=False)
+                if fig_sel:
+                    st.plotly_chart(fig_sel, use_container_width=True)
+                else:
+                    st.info("データがありません")
+                    
+                fig_trend_sel = create_sleep_trend_chart_for_df(df_selected, "睡眠時間推移 (選択期間)", compact_view=False)
+                if fig_trend_sel:
+                     st.plotly_chart(fig_trend_sel, use_container_width=True)
+
+            with c_other:
+                st.write("#### その他の期間")
+                # Detect gaps for compact view
+                fig_other = create_reference_sleep_chart_for_df(df_others, "睡眠チャート (他の期間)", compact_view=True)
+                if fig_other:
+                     st.plotly_chart(fig_other, use_container_width=True)
+                else:
+                    st.info("データがありません")
+                    
+                fig_trend_other = create_sleep_trend_chart_for_df(df_others, "睡眠時間推移 (他の期間)", compact_view=True)
+                if fig_trend_other:
+                     st.plotly_chart(fig_trend_other, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"ファイル読み込みエラー: {e}")
 
     if page == "ダッシュボード":
         try:
@@ -256,23 +701,68 @@ h1, h2, h3 {
                     fig.update_xaxes(title=None)
                     return update_chart_layout(fig)
 
-                def display_weekly_quality_metrics():
-                    # Get last 7 days
+                def display_current_status_metrics():
+                    # Get last 7 days for calculation
                     df_sorted = df.sort_values('date_dt')
                     recent_data = df_sorted.tail(7)
                     
-                    # Calculate averages
-                    # Columns: 寝つきの良さ, 寝起きの良さ, 日中の眠気
-                    avg_onset = recent_data['寝つきの良さ'].mean()
-                    avg_wake = recent_data['寝起きの良さ'].mean()
-                    avg_drowsiness = recent_data['日中の眠気'].mean()
+                    st.write("### 現在のステータス (過去7日間)")
                     
-                    st.write("### 週間平均 (過去7日間)")
+                    # Create a 3-column layout for metrics
+                    m1, m2, m3 = st.columns(3)
                     
-                    # Display metrics vertically
-                    st.metric(label="寝つきの良さ (Sleep Onset Quality)", value=f"{avg_onset:.2f}")
-                    st.metric(label="寝起きの良さ (Wake Up Quality)", value=f"{avg_wake:.2f}")
-                    st.metric(label="日中の眠気 (Daytime Drowsiness)", value=f"{avg_drowsiness:.2f}")
+                    # 1. Latest Sleep Debt
+                    with m1:
+                        if 'sleep_duration_hour' in recent_data.columns:
+                            latest_row = recent_data.iloc[-1]
+                            latest_debt = max(0, 7.5 - latest_row['sleep_duration_hour'])
+                            debt_str = format_hours(latest_debt)
+                            
+                            # Determine color based on debt
+                            color = "normal"
+                            if latest_debt > 2: color = "inverse" # High debt warning
+                            
+                            st.metric(label="睡眠負債 (最新)", value=debt_str, delta="-"+debt_str if latest_debt > 0 else "None", delta_color="inverse", help="最新の睡眠データにおける負債 (7.5h - 睡眠時間)")
+                    
+                    # 2. Average Sleep Duration
+                    with m2:
+                        if 'sleep_duration_hour' in recent_data.columns:
+                            avg_sleep = recent_data['sleep_duration_hour'].mean()
+                            avg_sleep_str = format_hours(avg_sleep)
+                            
+                            # Delta from ideal (7.5h)
+                            diff = avg_sleep - 7.5
+                            
+                            st.metric(label="平均睡眠時間", value=avg_sleep_str, delta=f"{diff:+.1f}h", help="過去7日間の平均睡眠時間")
+
+                    # 3. Standard Deviation (Consistency)
+                    with m3:
+                        if 'sleep_duration_hour' in recent_data.columns and len(recent_data) > 1:
+                            std_sleep = recent_data['sleep_duration_hour'].std()
+                            
+                            # Lower std is better (more consistent)
+                            # Color logic: std < 1.0 (Good), std > 1.5 (Bad)
+                            # Streamlit metric delta color defaults: Green (Positive), Red (Negative).
+                            # We want Low STD to be Green. So we can use -STD as delta? Or just show value.
+                            
+                            st.metric(label="睡眠時間のばらつき", value=f"{std_sleep:.2f}h", help="標準偏差。値が小さいほど睡眠時間が一定です。")
+                        else:
+                             st.metric(label="ばらつき", value="--")
+                    
+                    
+                    # Sleep Fit Score (REMOVED per user request)
+                    # if 'sleep_fit_score' in recent_data.columns:
+                    #     avg_fit = recent_data['sleep_fit_score'].mean()
+                    #     st.write(f"**推奨睡眠帯との一致度 (平均):** {avg_fit:.1f}%")
+                    #     st.progress(min(100, max(0, int(avg_fit))))
+                    # elif '就寝時間' in recent_data.columns:
+                    #      st.info("スコア計算中...")
+                    
+                    st.empty() # Placeholder if needed, or just end function
+
+
+                    
+
 
                 def create_sleep_debt_chart():
                     # Calculate debt: 7.5 - sleep_duration. If < 0 (surplus), set to 0.
@@ -363,41 +853,322 @@ h1, h2, h3 {
                     fig.update_xaxes(title=None)
                     return update_chart_layout(fig)
 
-                # Create 3 rows of 2 columns
-                # Row 1
-                c1, c2 = st.columns(2)
-                with c1:
+                def create_sleep_schedule_chart():
+                     # Visualize sleep intervals: X=Date, Y=Time (Range)
+                     if 'date_dt' not in df.columns or '就寝時間' not in df.columns or '起床時間' not in df.columns:
+                         return None
+
+                     df_sorted = df.sort_values('date_dt').tail(14).copy() # Last 2 weeks
+                     
+                     # Prepare data for floating bars
+                     dates = []
+                     starts = []
+                     durations = []
+                     colors = []
+                     texts = []
+                     
+                     # Base date for Y-axis normalization (e.g., 2000-01-01 16:00 to 2000-01-02 16:00)
+                     BASE_Y_DATE = pd.Timestamp("2000-01-01")
+                     
+                     for _, row in df_sorted.iterrows():
+                         try:
+                             # Parse times
+                             bt = pd.to_datetime(row['就寝時間'], format='%H:%M:%S').time()
+                             wt = pd.to_datetime(row['起床時間'], format='%H:%M:%S').time()
+                             
+                             # Normalize to 24h+ timeline
+                             # Cut-off is 16:00.
+                             # If time >= 16:00, it's Day 1.
+                             # If time < 16:00, it's Day 2.
+                             
+                             if bt.hour >= 16:
+                                 start_dt = pd.Timestamp.combine(BASE_Y_DATE, bt)
+                             else:
+                                 start_dt = pd.Timestamp.combine(BASE_Y_DATE + pd.Timedelta(days=1), bt)
+                                 
+                             if wt.hour >= 16:
+                                 end_dt = pd.Timestamp.combine(BASE_Y_DATE, wt)
+                             else:
+                                 end_dt = pd.Timestamp.combine(BASE_Y_DATE + pd.Timedelta(days=1), wt)
+                             
+                             # Adjustment for wrap-around cases
+                             # If normalized end < start, it means mapped incorrectly or duration is negative.
+                             # We assume valid sleep duration wraps to next day if needed.
+                             if end_dt < start_dt:
+                                  end_dt += pd.Timedelta(days=1)
+
+                             dates.append(row['date_label'])
+                             starts.append(start_dt)
+                             # Duration in milliseconds
+                             durations.append((end_dt - start_dt).total_seconds() * 1000)
+                             
+                             colors.append('#FF9800')
+                             
+                             # Hover text
+                             sleep_time_str = f"{start_dt.strftime('%H:%M')} - {end_dt.strftime('%H:%M')}"
+                             texts.append(sleep_time_str)
+                             
+                         except Exception:
+                             continue
+
+                     fig = go.Figure()
+                     
+                     fig.add_trace(go.Bar(
+                         x=dates,
+                         y=durations,
+                         base=starts,
+                         marker_color=colors,
+                         hovertext=texts,
+                         hovertemplate='日付: %{x}<br>時間: %{hovertext}<extra></extra>',
+                         opacity=0.8,
+                         width=0.6
+                     ))
+
+                     # Configure Y axis to show time
+                     # Range: 16:00 (Day 1) to 16:00 (Day 2)
+                     range_start = BASE_Y_DATE + pd.Timedelta(hours=16)
+                     range_end = BASE_Y_DATE + pd.Timedelta(hours=16+24) # Next day 16:00
+                     
+                     fig.update_layout(
+                         title='睡眠スケジュール (過去14日間)',
+                         yaxis=dict(
+                             title='時間',
+                             tickformat='%H:%M',
+                             range=[range_start, range_end]
+                         ),
+                         xaxis=dict(title='日付'),
+                         showlegend=False
+                     )
+                     
+                     return update_chart_layout(fig)
+
+                def create_reference_sleep_chart():
+                     # Visualize sleep with Base 19:00 (19:00 Top -> 19:00 Next Day Bottom)
+                     # Logic:
+                     # Map hours to 19..43 range.
+                     # h < 19 -> h + 24 (e.g., 01:00 -> 25.0)
+                     # h >= 19 -> h     (e.g., 23:00 -> 23.0)
+                     # Split if bar crosses 19:00 (43.0).
+                     
+                     if 'date_dt' not in df.columns or '就寝時間' not in df.columns or '起床時間' not in df.columns:
+                         return None
+            
+                     df_sorted = df.sort_values('date_dt').copy()
+                     
+                     dates = []
+                     bases = []
+                     heights = []
+                     colors = []
+                     texts = []
+                     
+                     BASE_HOUR = 19
+                     
+                     def adjust_hour(h):
+                         # Map 0..24 to 19..43 range
+                         if h < BASE_HOUR:
+                             return h + 24.0
+                         return h
+                     
+                     for _, row in df_sorted.iterrows():
+                         try:
+                             # Parse decimal hours
+                             b_dt = pd.to_datetime(row['就寝時間'], format='%H:%M:%S')
+                             w_dt = pd.to_datetime(row['起床時間'], format='%H:%M:%S')
+                             
+                             b_raw = b_dt.hour + b_dt.minute/60.0
+                             w_raw = w_dt.hour + w_dt.minute/60.0
+                             
+                             b_adj = adjust_hour(b_raw)
+                             w_adj = adjust_hour(w_raw)
+                             
+                             current_date = row['date_dt']
+                             next_date = current_date + pd.Timedelta(days=1)
+                             
+                             # Handle wrap-around for duration
+                             # If w_adj < b_adj (e.g., Bed 18:00 [42], Wake 20:00 [20]), 
+                             # then Waketime is next cycle [20+24=44].
+                             if w_adj < b_adj:
+                                 w_adj += 24.0
+                             
+                             # Does it cross the 43.0 (19:00 next day) boundary?
+                             # In standard view 19..43, boundary is 43.
+                             # If w_adj > BASE_HOUR + 24 (43.0):
+                             # Split!
+                             
+                             limit = BASE_HOUR + 24.0
+                             
+                             if w_adj <= limit:
+                                 # Fits in one day (e.g. 23:00 [23] -> 07:00 [31])
+                                 dates.append(current_date)
+                                 bases.append(b_adj)
+                                 heights.append(w_adj - b_adj)
+                                 colors.append('#FF9800')
+                                 texts.append(f"{row['就寝時間']} - {row['起床時間']}")
+                             else:
+                                 # Split
+                                 # Segment 1: Bed to Limit (Date N)
+                                 dates.append(current_date)
+                                 bases.append(b_adj)
+                                 heights.append(limit - b_adj)
+                                 colors.append('#FF9800')
+                                 texts.append(f"{row['就寝時間']} - 19:00")
+                                 
+                                 # Segment 2: Base to Wake (Date N+1)
+                                 dates.append(next_date)
+                                 bases.append(BASE_HOUR) # Start at 19.0 (Top)
+                                 heights.append(w_adj - 24.0 - BASE_HOUR) # Remainder
+                                 # Wait, w_adj is e.g. 44 (20:00 next day).
+                                 # We want 19:00 -> 20:00.
+                                 # 19.0 to 20.0 (on chart scale 19..43).
+                                 # w_adj - 24 = 20.
+                                 # height = 20 - 19 = 1. Correct.
+                                 colors.append('#FF9800')
+                                 texts.append(f"19:00 - {row['起床時間']}")
+                                 
+                         except Exception:
+                             continue
+
+                     fig = go.Figure()
+                     
+                     # Add Recommended Time Highlight (Background)
+                     # Get target times from session state (defaults are set in main)
+                     if "target_start_time" in st.session_state and "target_end_time" in st.session_state:
+                         ts_val = st.session_state.target_start_time
+                         te_val = st.session_state.target_end_time
+                         
+                         ts_raw = ts_val.hour + ts_val.minute/60.0
+                         te_raw = te_val.hour + te_val.minute/60.0
+                         
+                         ts_adj = adjust_hour(ts_raw)
+                         te_adj = adjust_hour(te_raw)
+                         
+                         # Check if target wraps (e.g. 23:00 to 07:00)
+                         # If te_adj < ts_adj, add 24 to te_adj? 
+                         # adjust_hour already maps 07:00 to 31.0 (7+24).
+                         # adjust_hour maps 23:00 to 23.0.
+                         # exact logic: 
+                         # 23:00 -> 23 >= 19 -> 23.0
+                         # 07:00 -> 7 < 19 -> 31.0
+                         # So 23.0 to 31.0. Correct.
+                         
+                         # If user sets 01:00 to 09:00?
+                         # 01:00 -> 25.0
+                         # 09:00 -> 33.0
+                         # Correct.
+                         
+                         # If user sets 09:00 to 11:00?
+                         # 09:00 -> 33.0
+                         # 11:00 -> 35.0
+                         # Correct.
+                         
+                         # Ensure te_adj > ts_adj (handle basic wrap if needed, though adjust_hour usually handles day wrap for <19h)
+                         if te_adj < ts_adj:
+                             te_adj += 24.0
+                         
+                         # Add the shape
+                         fig.add_shape(
+                            type="rect",
+                            x0=0, x1=1, xref="paper",
+                            y0=ts_adj, y1=te_adj, yref="y",
+                            fillcolor="rgba(135, 206, 235, 0.3)", # Light Sky Blue, transparent
+                            line_width=0,
+                            layer="below"
+                         )
+
+                     
+                     fig.add_trace(go.Bar(
+                         x=dates,
+                         y=heights,
+                         base=bases,
+                         marker_color=colors,
+                         hovertext=texts,
+                         hovertemplate='日付: %{x|%m/%d}<br>時間: %{hovertext}<extra></extra>'
+                     ))
+
+                     # Create tick labels 19, 20... 12 (next day)
+                     # Range 19..36 (17 hours)
+                     tick_vals = list(range(BASE_HOUR, BASE_HOUR + 18)) # 19 to 36 inclusive
+                     tick_text = [str(t % 24) + ":00" for t in tick_vals]
+                     
+                     # Determine default range (last 14 days)
+                     if not df_sorted.empty:
+                         last_date = df_sorted['date_dt'].max()
+                         start_date = last_date - pd.Timedelta(days=13) # Show 14 days total including last
+                         # Add slight buffer to end date if needed, or just let it be exact
+                         range_x = [start_date, last_date + pd.Timedelta(days=0.5)] # small buffer
+                     else:
+                         range_x = None
+
+                     
+                     # Apply common layout first (which sets default height=320)
+                     fig = update_chart_layout(fig)
+                     
+                     # Then overwrite with specific settings
+                     fig.update_layout(
+                         title='睡眠チャート (19時～12時)',
+                         yaxis=dict(
+                             title='時間',
+                             range=[BASE_HOUR + 17, BASE_HOUR], # 36 (Bottom) -> 19 (Top)
+                             tickmode='array',
+                             tickvals=tick_vals,
+                             ticktext=tick_text,
+                             dtick=1
+                         ),
+                         xaxis=dict(
+                             title='日付',
+                             tickformat='%m/%d',
+                             tickangle=-45,
+                             range=range_x # Set initial zoom
+                         ),
+                         showlegend=False,
+                         height=690
+                     )
+                     
+                     return fig
+
+                # --- NEW LAYOUT (Updated) ---
+                
+                # Row 1: Weekly Chart (Left) + Current Status Metrics (Right)
+                c_r1_1, c_r1_2 = st.columns(2)
+                
+                with c_r1_1:
                     if 'date_dt' in df.columns:
                         st.plotly_chart(create_weekly_bar_chart(), use_container_width=True)
                     else:
-                        st.plotly_chart(create_plot("(1)"), use_container_width=True)
-                with c2:
-                    # Check if quality columns exist
-                    if all(col in df.columns for col in ['寝つきの良さ', '寝起きの良さ', '日中の眠気']):
-                        # Use a container for metric card styling
-                        with st.container():
-                             display_weekly_quality_metrics()
-                    else:
-                         st.plotly_chart(create_plot("(2)"), use_container_width=True)
+                        st.plotly_chart(create_plot("Weekly"), use_container_width=True)
 
-                # Row 2
-                c3, c4 = st.columns(2)
-                with c3:
+                with c_r1_2:
+                     with st.container():
+                          display_current_status_metrics()
+
+                st.write("---")
+
+                # Row 2: Stacked Charts (Left) vs Tall Reference Chart (Right)
+                c_main_left, c_main_right = st.columns(2)
+                
+                with c_main_left:
+                    # 1. Sleep Debt Chart
                     if 'date_dt' in df.columns:
                         st.plotly_chart(create_sleep_debt_chart(), use_container_width=True)
                     else:
-                        st.plotly_chart(create_plot("(3)"), use_container_width=True)
-                with c4:
-                    # SWAPPED: Sleep Score Trend is now mostly here (Position 4)
-                    st.plotly_chart(create_sleep_score_trend(), use_container_width=True)
-                
-                # Row 3
-                c5, c6 = st.columns(2)
-                with c5:
-                    st.plotly_chart(create_monthly_sleep_trend(), use_container_width=True)
-                with c6:
-                    # SWAPPED: Histogram is now here (Position 6)
+                        st.plotly_chart(create_plot("Debt"), use_container_width=True)
+                        
+                    st.write("") # Spacer
+                    
+                    # 2. Sleep Histogram
                     st.plotly_chart(create_sleep_histogram(), use_container_width=True)
+
+                with c_main_right:
+                    # Tall Reference Chart (800px)
+                    if 'date_dt' in df.columns:
+                         st.plotly_chart(create_reference_sleep_chart(), use_container_width=True)
+                    else:
+                         st.write("データ不足")
+
+                st.write("---")
+                
+                # Bottom: Monthly Trend
+                st.plotly_chart(create_monthly_sleep_trend(), use_container_width=True)
 
             else:
                 st.error(f"'{DATA_FILE}' に 'sleep_duration_hour' カラムが見つからないか計算できませんでした")
