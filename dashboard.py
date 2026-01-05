@@ -1,7 +1,33 @@
 import streamlit as st
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+
+def add_cumulative_sleep_debt(df, actual_col, target_sleep_hours, mode="offset", output_col="sleep_debt_cum"):
+    """
+    Calculates cumulative sleep debt.
+    Reference: sleep_debt_calc_new.py
+    """
+    out = df.copy()
+    actual = pd.to_numeric(out[actual_col], errors="coerce")
+    balance = target_sleep_hours - actual
+
+    if mode == "offset":
+        debt = []
+        running = 0.0
+        for x in balance:
+            if pd.isna(x):
+                debt.append(np.nan)
+                continue
+            running = max(0.0, running + x)
+            debt.append(running)
+        out[output_col] = debt
+    else:
+        # Simple accumulation (no offset)
+        out[output_col] = balance.clip(lower=0).cumsum()
+        
+    return out
 
 # Load the dataset
 # Adjust the path if necessary, but assuming it's in the same directory as per user usage
@@ -20,6 +46,164 @@ def calculate_sleep_duration(row):
         return duration
     except Exception as e:
         return None
+
+def time_to_minutes(time_str):
+    try:
+        t = pd.to_datetime(time_str, format='%H:%M:%S')
+        return t.hour * 60 + t.minute
+    except:
+        return None
+
+def minutes_to_time(minutes):
+    h = int(minutes // 60) % 24
+    m = int(minutes % 60)
+    return f"{h}:{m:02d}:00"
+
+def fill_missing_archives(df):
+    if df.empty or '日付' not in df.columns:
+        return df
+        
+    df_filled = df.copy()
+    df_filled['date_dt'] = pd.to_datetime(df_filled['日付'], format='%Y/%m/%d')
+    df_filled = df_filled.sort_values('date_dt')
+    
+    min_date = df_filled['date_dt'].min()
+    max_date = df_filled['date_dt'].max()
+    
+    all_dates = pd.date_range(start=min_date, end=max_date, freq='D')
+    existing_dates = set(df_filled['date_dt'])
+    
+    missing_dates = [d for d in all_dates if d not in existing_dates]
+    
+    if not missing_dates:
+        return df_filled
+    
+    new_rows = []
+    
+    # Needs to handle iterative filling? 
+    # Current request: "Use average of past 1 week".
+    # If we have [Data] [Gap 1] [Gap 2] ...
+    # Gap 1 uses [Data]. Gap 2 uses [Data] + [Gap 1 (Filled)].
+    # So we should iterate through all dates in order.
+    
+    # Re-build DataFrame date by date
+    
+    # Create a dict for faster access
+    current_data = df_filled.set_index('date_dt').to_dict('index')
+    
+    filled_data_list = []
+    
+    for d in all_dates:
+        row = None
+        is_missing_record = False
+        
+        if d in current_data:
+            row = current_data[d]
+            row['date_dt'] = d # Ensure date_dt is kept
+        else:
+            is_missing_record = True
+            row = {
+                '日付': d.strftime('%Y/%m/%d'),
+                'date_dt': d,
+                '就寝時間': None,
+                '起床時間': None,
+                '昼寝の時間': None,
+                '寝つきの良さ': 0,
+                '寝起きの良さ': 0,
+                '日中の眠気': 0,
+                '目が覚めた回数': 0,
+                'is_auto_filled': True # Marker
+            }
+        
+        # Check for missing values in this row (whether new or existing)
+        # Fields to check/fill
+        fields_to_fill = ['就寝時間', '起床時間', '昼寝の時間']
+        needs_fill = False
+        for f in fields_to_fill:
+            if f not in row or pd.isna(row[f]) or str(row[f]).strip() == '':
+                 needs_fill = True
+                 break
+        
+        if needs_fill:
+            # Calculate Averages from past 7 days
+            past_records = [r for r in filled_data_list if (d - r['date_dt']).days <= 7 and (d - r['date_dt']).days > 0]
+            
+            avg_bed_mins = []
+            avg_wake_mins = []
+            avg_nap_mins = []
+            
+            for r in past_records:
+                if '就寝時間' in r and pd.notna(r['就寝時間']):
+                    bm = time_to_minutes(r['就寝時間'])
+                    if bm is not None:
+                        if bm < 12 * 60: 
+                            bm += 24 * 60
+                        avg_bed_mins.append(bm)
+                        
+                if '起床時間' in r and pd.notna(r['起床時間']):
+                     wm = time_to_minutes(r['起床時間'])
+                     if wm is not None:
+                         # Wake Time logic: just raw minutes usually ok?
+                         # Or handle cross-day? Assuming wake is 4:00-15:00.
+                         if wm < 12 * 60: 
+                             wm += 24 * 60 # To be safe and consistent with logic below?
+                             # In previous implementation I did: if wm < 12*60: wm+=24*60.
+                             # But actually simply averaging raw minutes is risky if some are 23:00 and some are 01:00.
+                             # For Wake time, it's usually morning. 
+                             # Let's simple-average raw minutes for wake time assuming no midnight crossing for wake.
+                             # Wait, look at previous code I replaced. 
+                             # I had logic `if wm < 12*60: ... pass`. I didn't actually change wm.
+                             # So I was just using raw `time_to_minutes`.
+                             # BUT for Bedtime I did `bm += 24*60`.
+                             pass
+                     avg_wake_mins.append(time_to_minutes(r['起床時間']))
+
+                if '昼寝の時間' in r and pd.notna(r['昼寝の時間']):
+                     nm = time_to_minutes(r['昼寝の時間'])
+                     if nm is not None:
+                         avg_nap_mins.append(nm)
+
+            # Fill missing fields
+            if '就寝時間' not in row or pd.isna(row['就寝時間']) or str(row['就寝時間']).strip() == '':
+                 if avg_bed_mins:
+                    mean_bed = sum(avg_bed_mins) / len(avg_bed_mins)
+                    mean_bed = mean_bed % (24 * 60)
+                    row['就寝時間'] = minutes_to_time(mean_bed)
+                 else:
+                    row['就寝時間'] = '0:00:00' # Default
+            
+            if '起床時間' not in row or pd.isna(row['起床時間']) or str(row['起床時間']).strip() == '':
+                 # Filter None
+                 avg_wake_mins = [x for x in avg_wake_mins if x is not None]
+                 if avg_wake_mins:
+                     mean_wake = sum(avg_wake_mins) / len(avg_wake_mins)
+                     row['起床時間'] = minutes_to_time(mean_wake)
+                 else:
+                     row['起床時間'] = '0:00:00'
+            
+            if '昼寝の時間' not in row or pd.isna(row['昼寝の時間']) or str(row['昼寝の時間']).strip() == '':
+                 avg_nap_mins = [x for x in avg_nap_mins if x is not None]
+                 if avg_nap_mins:
+                     mean_nap = sum(avg_nap_mins) / len(avg_nap_mins)
+                     row['昼寝の時間'] = minutes_to_time(mean_nap)
+                 else:
+                     row['昼寝の時間'] = '0:00:00'
+                     
+            if is_missing_record:
+                row['is_auto_filled'] = True
+            else:
+                 row['is_partial_filled'] = True # Marker for debug if needed
+
+        filled_data_list.append(row)
+            
+    # Reconstruct DF
+    df_result = pd.DataFrame(filled_data_list)
+    # Drop temp column
+    if 'date_dt' in df_result.columns:
+        # Keep it if needed, or drop. The usage later re-creates it.
+        pass
+        
+    return df_result
 
 def format_hours(hours):
     """Convert decimal hours to XhYm format."""
@@ -135,6 +319,8 @@ h1, h2, h3 {
         st.session_state.target_start_time = default_start
     if "target_end_time" not in st.session_state:
         st.session_state.target_end_time = default_end
+    if "target_sleep_duration" not in st.session_state:
+        st.session_state.target_sleep_duration = 7.5
 
     if page == "設定":
         st.subheader("睡眠スコア設定")
@@ -144,6 +330,9 @@ h1, h2, h3 {
         # Set value kwarg even with key to ensure default applies if key is new
         st.time_input("睡眠開始目標時間 (Target Start)", value=default_start, key="target_start_time")
         st.time_input("睡眠終了目標時間 (Target End)", value=default_end, key="target_end_time")
+        
+        st.subheader("目標値設定")
+        st.number_input("理想の睡眠時間 (時間)", min_value=4.0, max_value=12.0, value=7.5, step=0.5, key="target_sleep_duration", help="睡眠負債の計算やグラフの目標線に使用されます。")
 
     if page == "データ入力":
         st.subheader("データアップロード")
@@ -264,6 +453,9 @@ h1, h2, h3 {
         try:
             df = pd.read_csv(DATA_FILE)
             
+            # Apply Auto-Filling for missing dates if needed
+            df = fill_missing_archives(df)
+            
             # Preprocess
             if '日付' in df.columns:
                 df['date_dt'] = pd.to_datetime(df['日付'], format='%Y/%m/%d')
@@ -271,6 +463,21 @@ h1, h2, h3 {
             # Calculate sleep duration if needed
             if '就寝時間' in df.columns and '起床時間' in df.columns:
                  df['sleep_duration_hour'] = df.apply(calculate_sleep_duration, axis=1)
+            
+            # Calculate nap duration
+            if '昼寝の時間' in df.columns:
+                def calc_nap(row):
+                    try:
+                        return time_to_minutes(row['昼寝の時間']) / 60.0
+                    except:
+                        return 0.0
+                df['nap_duration_hour'] = df.apply(calc_nap, axis=1).fillna(0)
+            else:
+                df['nap_duration_hour'] = 0.0
+
+            # Calculate total sleep (Night + Nap)
+            if 'sleep_duration_hour' in df.columns:
+                 df['total_sleep_hour'] = df['sleep_duration_hour'].fillna(0) + df['nap_duration_hour']
             
             # --- Date Selection ---
             if 'date_dt' in df.columns and not df.empty:
@@ -677,85 +884,154 @@ h1, h2, h3 {
                     df_sorted = df.sort_values('date_dt') # Ensure sorted
                     recent_data = df_sorted.tail(7).copy() # Use copy to avoid SettingWithCopyWarning
                     
-                    # Calculate average
-                    avg_sleep = recent_data['sleep_duration_hour'].mean()
-                    avg_sleep_str = format_hours(avg_sleep)
+                    # Prepare Data
+                    dates = recent_data['date_label']
+                    night_sleep = recent_data['sleep_duration_hour']
                     
-                    # Add formatted string column
-                    recent_data['formatted_sleep'] = recent_data['sleep_duration_hour'].apply(format_hours)
+                    # Calculate Nap Hours
+                    nap_hours = []
+                    for _, row in recent_data.iterrows():
+                        nh = 0.0
+                        if '昼寝の時間' in row and pd.notna(row['昼寝の時間']):
+                            nm = time_to_minutes(row['昼寝の時間'])
+                            if nm is not None:
+                                nh = nm / 60.0
+                        nap_hours.append(nh)
+                    
+                    recent_data['nap_hours'] = nap_hours
+                    recent_data['total_sleep'] = recent_data['sleep_duration_hour'] + recent_data['nap_hours']
+                    
+                    # Calculate new average (Total)
+                    avg_total = recent_data['total_sleep'].mean()
+                    avg_total_str = format_hours(avg_total)
+                    
+                    # Format strings for hover
+                    night_texts = recent_data['sleep_duration_hour'].apply(format_hours)
+                    nap_texts = recent_data['nap_hours'].apply(format_hours)
+                    total_texts = recent_data['total_sleep'].apply(format_hours)
 
-                    # Warm color for bars
-                    fig = px.bar(recent_data, x='date_label', y='sleep_duration_hour',
-                                 title=f'睡眠時間 (過去7日間)<br>平均: {avg_sleep_str}',
-                                 text='formatted_sleep',
-                                 labels={'date_label': '日付', 'sleep_duration_hour': '睡眠時間 (時間)', 'formatted_sleep': '時間'})
-                    # Add rounded corners (marker_cornerradius)
-                    # Border color changed to inner color (#FF9800)
-                    fig.update_traces(textposition='outside', marker_color='#FF9800', marker_line_color='#FF9800', marker_line_width=1.5, marker_cornerradius=15) # Vibrant Orange
+                    fig = go.Figure()
                     
-                    # Add horizontal line for average sleep
-                    fig.add_hline(y=avg_sleep, line_dash="dash", line_color="#555555")
+                    # 1. Nap (Bottom) - Modified per user request to be at bottom
+                    fig.add_trace(go.Bar(
+                        x=dates,
+                        y=nap_hours,
+                        name='昼寝',
+                        marker_color='#26A69A', # Teal/Greenish
+                        text=nap_texts, # Show nap text if non-zero
+                        textposition='auto',
+                        hovertemplate='日付: %{x}<br>昼寝: %{text}<extra></extra>',
+                        marker_cornerradius=15
+                    ))
                     
-                    # Update hover template to show formatted time
-                    fig.update_traces(hovertemplate='日付: %{x}<br>睡眠時間: %{text}')
-                    fig.update_xaxes(title=None)
+                    # 2. Night Sleep (Top)
+                    fig.add_trace(go.Bar(
+                        x=dates,
+                        y=night_sleep,
+                        name='夜間睡眠',
+                        marker_color='#FF9800', # Vibrant Orange
+                        text=night_texts,
+                        textposition='auto', # Show text inside if space allows
+                        hovertemplate='日付: %{x}<br>夜間睡眠: %{text}<extra></extra>',
+                        marker_cornerradius=15
+                    ))
+                    
+                    # Update layout for stacking
+                    fig.update_layout(
+                        title=f'週間睡眠時間 (昼寝含む)<br>平均: {avg_total_str}',
+                        barmode='stack',
+                        yaxis_title='睡眠時間 (時間)',
+                        xaxis_title=None,
+                        showlegend=True,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                    )
+                    
+                    # Add horizontal line for target sleep
+                    target_sleep = st.session_state.target_sleep_duration
+                    fig.add_hline(y=target_sleep, line_dash="dash", line_color="#555555")
+                    
+                    # Apply common layout
                     return update_chart_layout(fig)
 
                 def display_current_status_metrics():
-                    # Get last 7 days for calculation
+                    # Get data sorted by date
                     df_sorted = df.sort_values('date_dt')
-                    recent_data = df_sorted.tail(7)
                     
-                    st.write("### 現在のステータス (過去7日間)")
-                    
-                    # Create a 3-column layout for metrics
-                    m1, m2, m3 = st.columns(3)
-                    
-                    # 1. Latest Sleep Debt
-                    with m1:
-                        if 'sleep_duration_hour' in recent_data.columns:
-                            latest_row = recent_data.iloc[-1]
-                            latest_debt = max(0, 7.5 - latest_row['sleep_duration_hour'])
-                            debt_str = format_hours(latest_debt)
-                            
-                            # Determine color based on debt
-                            color = "normal"
-                            if latest_debt > 2: color = "inverse" # High debt warning
-                            
-                            st.metric(label="睡眠負債 (最新)", value=debt_str, delta="-"+debt_str if latest_debt > 0 else "None", delta_color="inverse", help="最新の睡眠データにおける負債 (7.5h - 睡眠時間)")
-                    
-                    # 2. Average Sleep Duration
-                    with m2:
-                        if 'sleep_duration_hour' in recent_data.columns:
-                            avg_sleep = recent_data['sleep_duration_hour'].mean()
-                            avg_sleep_str = format_hours(avg_sleep)
-                            
-                            # Delta from ideal (7.5h)
-                            diff = avg_sleep - 7.5
-                            
-                            st.metric(label="平均睡眠時間", value=avg_sleep_str, delta=f"{diff:+.1f}h", help="過去7日間の平均睡眠時間")
+                    # Need at least 1 day for current
+                    if df_sorted.empty:
+                        return
 
-                    # 3. Standard Deviation (Consistency)
-                    with m3:
-                        if 'sleep_duration_hour' in recent_data.columns and len(recent_data) > 1:
-                            std_sleep = recent_data['sleep_duration_hour'].std()
+                    # Current Week (Last 7 days)
+                    current_week_data = df_sorted.tail(7)
+                    
+                    # Previous Week (7 days before current)
+                    # Use iloc: [-14:-7]
+                    prev_week_data = pd.DataFrame()
+                    if len(df_sorted) >= 14:
+                         prev_week_data = df_sorted.iloc[-14:-7]
+                    
+                    st.write("### 週間統計")
+                    
+                    # Create a 2-column layout for Weekly Stats (Average & SD) - Modified per user request
+                    c_avg, c_std = st.columns(2)
+                    
+                    # 1. Average Sleep Duration (Night Sleep)
+                    with c_avg:
+                        if 'sleep_duration_hour' in current_week_data.columns:
+                            current_avg = current_week_data['sleep_duration_hour'].mean()
+                            avg_sleep_str = format_hours(current_avg)
                             
-                            # Lower std is better (more consistent)
-                            # Color logic: std < 1.0 (Good), std > 1.5 (Bad)
-                            # Streamlit metric delta color defaults: Green (Positive), Red (Negative).
-                            # We want Low STD to be Green. So we can use -STD as delta? Or just show value.
+                            delta_val = None
+                            if not prev_week_data.empty and 'sleep_duration_hour' in prev_week_data.columns:
+                                prev_avg = prev_week_data['sleep_duration_hour'].mean()
+                                diff = current_avg - prev_avg
+                                delta_val = f"{diff:+.2f}h (先週比)"
                             
-                            st.metric(label="睡眠時間のばらつき", value=f"{std_sleep:.2f}h", help="標準偏差。値が小さいほど睡眠時間が一定です。")
+                            st.metric(label="平均夜間睡眠", value=avg_sleep_str, delta=delta_val, help="過去7日間の平均睡眠時間 vs 先週の平均")
+
+                    # 2. Standard Deviation (Consistency)
+                    with c_std:
+                        if 'sleep_duration_hour' in current_week_data.columns and len(current_week_data) > 1:
+                            current_std = current_week_data['sleep_duration_hour'].std()
+                            
+                            delta_std_val = None
+                            if not prev_week_data.empty and 'sleep_duration_hour' in prev_week_data.columns and len(prev_week_data) > 1:
+                                prev_std = prev_week_data['sleep_duration_hour'].std()
+                                diff_std = current_std - prev_std
+                                # For consistency, Lower is Better.
+                                # Streamlit delta: Positive (Green) / Negative (Red) by default.
+                                # If std INCREASED (Positive diff), it's BAD -> Red.
+                                # If std DECREASED (Negative diff), it's GOOD -> Green.
+                                # default usage: delta_color="inverse" makes positive Red, negative Green.
+                                delta_std_val = f"{diff_std:+.2f}h (先週比)"
+                            
+                            st.metric(label="睡眠時間のばらつき", value=f"{current_std:.2f}h", delta=delta_std_val, delta_color="inverse", help="標準偏差。値が小さいほど一定。先週との差を表示。")
                         else:
                              st.metric(label="ばらつき", value="--")
                     
+                    # 3. Current Sleep Debt (Moved below Weekly Stats)
+                    st.write("### 睡眠負債")
+                    target_sleep = st.session_state.target_sleep_duration
                     
-                    # Sleep Fit Score (REMOVED per user request)
-                    # if 'sleep_fit_score' in recent_data.columns:
-                    #     avg_fit = recent_data['sleep_fit_score'].mean()
-                    #     st.write(f"**推奨睡眠帯との一致度 (平均):** {avg_fit:.1f}%")
-                    #     st.progress(min(100, max(0, int(avg_fit))))
-                    # elif '就寝時間' in recent_data.columns:
+                    st.write("### 睡眠負債")
+                    target_sleep = st.session_state.target_sleep_duration
+                    
+                    # Calculate cumulative debt using ALL data
+                    # Reverted to use only Night Sleep (sleep_duration_hour) as per user request
+                    full_df_sorted = df.sort_values('date_dt')
+                    
+                    if 'sleep_duration_hour' in full_df_sorted.columns and not full_df_sorted.empty:
+                        df_cum = add_cumulative_sleep_debt(
+                            full_df_sorted, 
+                            actual_col="sleep_duration_hour", 
+                            target_sleep_hours=target_sleep, 
+                            mode="offset"
+                        )
+                        latest_debt = df_cum.iloc[-1]['sleep_debt_cum']
+                        debt_str = format_hours(latest_debt)
+                        
+                        st.metric(label="現在の睡眠負債 (累積)", value=debt_str, help=f"累積睡眠負債 ({target_sleep}h基準・超過返済あり)")
+                    
                     #      st.info("スコア計算中...")
                     
                     st.empty() # Placeholder if needed, or just end function
@@ -765,23 +1041,27 @@ h1, h2, h3 {
 
 
                 def create_sleep_debt_chart():
-                    # Calculate debt: 7.5 - sleep_duration. If < 0 (surplus), set to 0.
+                    target_sleep = st.session_state.target_sleep_duration
                     df_sorted = df.sort_values('date_dt')
                     
-                    # Calculate debt
-                    debt_series = 7.5 - df_sorted['sleep_duration_hour']
-                    debt_series = debt_series.apply(lambda x: max(0, x))
+                    # Calculate Cumulative Debt (using Night Sleep only)
+                    df_cum = add_cumulative_sleep_debt(
+                        df_sorted, 
+                        actual_col="sleep_duration_hour", 
+                        target_sleep_hours=target_sleep, 
+                        mode="offset"
+                    )
                     
                     # Create a temporary DF for plotting
                     plot_df = pd.DataFrame({
                         'date_label': df_sorted['date_label'],
-                        'debt': debt_series
+                        'debt': df_cum['sleep_debt_cum']
                     })
                     plot_df['formatted_debt'] = plot_df['debt'].apply(format_hours)
                     
                     fig = px.area(plot_df, x='date_label', y='debt',
-                                  title='睡眠負債の推移 (理想: 7.5時間)',
-                                  labels={'date_label': '日付', 'debt': '睡眠負債 (時間)'},
+                                  title=f'睡眠負債の推移 (累積・理想: {target_sleep}時間)',
+                                  labels={'date_label': '日付', 'debt': '累積睡眠負債 (時間)'},
                                   custom_data=['formatted_debt']) # Pass formatted data
                     # Red/Salmon is already warm, keeping it as it represents "Debt/Warning"
                     fig.update_traces(line_color='#E64A19', fillcolor='rgba(255, 87, 34, 0.3)') # Darker Orange/Red
