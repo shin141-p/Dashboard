@@ -3,6 +3,9 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import datetime
+import gspread
+from google.oauth2.service_account import Credentials
 
 def add_cumulative_sleep_debt(df, actual_col, target_sleep_hours, mode="offset", output_col="sleep_debt_cum"):
     """
@@ -32,6 +35,39 @@ def add_cumulative_sleep_debt(df, actual_col, target_sleep_hours, mode="offset",
 # Load the dataset
 # Adjust the path if necessary, but assuming it's in the same directory as per user usage
 DATA_FILE = 'data_tent.csv'
+SPREADSHEET_ID = "1-cB-5Cs02wkfPMVg9s0pDhSgoYxALS9iOt2GeZOyNHk"
+
+@st.cache_data(ttl=600)
+def load_data_from_sheet():
+    """Load data from Google Spreadsheet."""
+    try:
+        if "gcp_service_account" not in st.secrets:
+            # Fallback to CSV
+            return pd.read_csv(DATA_FILE)
+
+        creds_info = dict(st.secrets["gcp_service_account"])
+        creds = Credentials.from_service_account_info(
+            creds_info,
+            scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        )
+        client = gspread.authorize(creds)
+        
+        ws = client.open_by_key(SPREADSHEET_ID).worksheet("フォームの回答 1")
+        data = ws.get_all_values()
+        
+        if not data:
+            return pd.DataFrame()
+            
+        headers = data[0]
+        rows = data[1:]
+        return pd.DataFrame(rows, columns=headers)
+        
+    except Exception as e:
+        st.sidebar.error(f"Sheet Error: {e}, falling back to CSV")
+        try:
+            return pd.read_csv(DATA_FILE)
+        except:
+            return pd.DataFrame()
 
 def calculate_sleep_duration(row):
     try:
@@ -451,7 +487,7 @@ h1, h2, h3 {
     if page == "データ比較":
         st.subheader("データ比較")
         try:
-            df = pd.read_csv(DATA_FILE)
+            df = load_data_from_sheet()
             
             # Apply Auto-Filling for missing dates if needed
             df = fill_missing_archives(df)
@@ -838,12 +874,27 @@ h1, h2, h3 {
 
     if page == "ダッシュボード":
         try:
-            df = pd.read_csv(DATA_FILE)
+            df = load_data_from_sheet()
             
             # Calculate sleep_duration_hour if it doesn't exist but the source columns do
             if 'sleep_duration_hour' not in df.columns:
                 if '就寝時間' in df.columns and '起床時間' in df.columns:
                     df['sleep_duration_hour'] = df.apply(calculate_sleep_duration, axis=1)
+
+            # Calculate nap duration
+            if '昼寝の時間' in df.columns:
+                def calc_nap(row):
+                    try:
+                        return time_to_minutes(row['昼寝の時間']) / 60.0
+                    except:
+                        return 0.0
+                df['nap_duration_hour'] = df.apply(calc_nap, axis=1).fillna(0)
+            else:
+                df['nap_duration_hour'] = 0.0
+
+            # Calculate total sleep (Night + Nap)
+            if 'sleep_duration_hour' in df.columns:
+                df['total_sleep_hour'] = df['sleep_duration_hour'].fillna(0) + df['nap_duration_hour']
 
             # Parse date and add weekday
             if '日付' in df.columns:
@@ -1013,24 +1064,21 @@ h1, h2, h3 {
                     st.write("### 睡眠負債")
                     target_sleep = st.session_state.target_sleep_duration
                     
-                    st.write("### 睡眠負債")
-                    target_sleep = st.session_state.target_sleep_duration
-                    
                     # Calculate cumulative debt using ALL data
-                    # Reverted to use only Night Sleep (sleep_duration_hour) as per user request
+                    # Use Total Sleep (Night + Nap) for debt calculation ONLY
                     full_df_sorted = df.sort_values('date_dt')
                     
-                    if 'sleep_duration_hour' in full_df_sorted.columns and not full_df_sorted.empty:
+                    if 'total_sleep_hour' in full_df_sorted.columns and not full_df_sorted.empty:
                         df_cum = add_cumulative_sleep_debt(
                             full_df_sorted, 
-                            actual_col="sleep_duration_hour", 
+                            actual_col="total_sleep_hour", 
                             target_sleep_hours=target_sleep, 
                             mode="offset"
                         )
                         latest_debt = df_cum.iloc[-1]['sleep_debt_cum']
                         debt_str = format_hours(latest_debt)
                         
-                        st.metric(label="現在の睡眠負債 (累積)", value=debt_str, help=f"累積睡眠負債 ({target_sleep}h基準・超過返済あり)")
+                        st.metric(label="現在の睡眠負債 (累積)", value=debt_str, help=f"累積睡眠負債 ({target_sleep}h基準・超過返済あり・昼寝含む)")
                     
                     #      st.info("スコア計算中...")
                     
@@ -1044,10 +1092,10 @@ h1, h2, h3 {
                     target_sleep = st.session_state.target_sleep_duration
                     df_sorted = df.sort_values('date_dt')
                     
-                    # Calculate Cumulative Debt (using Night Sleep only)
+                    # Calculate Cumulative Debt (using Total Sleep including Nap)
                     df_cum = add_cumulative_sleep_debt(
                         df_sorted, 
-                        actual_col="sleep_duration_hour", 
+                        actual_col="total_sleep_hour", 
                         target_sleep_hours=target_sleep, 
                         mode="offset"
                     )
@@ -1060,7 +1108,7 @@ h1, h2, h3 {
                     plot_df['formatted_debt'] = plot_df['debt'].apply(format_hours)
                     
                     fig = px.area(plot_df, x='date_label', y='debt',
-                                  title=f'睡眠負債の推移 (累積・理想: {target_sleep}時間)',
+                                  title=f'睡眠負債の推移 (理想: {target_sleep}時間・昼寝含む)',
                                   labels={'date_label': '日付', 'debt': '累積睡眠負債 (時間)'},
                                   custom_data=['formatted_debt']) # Pass formatted data
                     # Red/Salmon is already warm, keeping it as it represents "Debt/Warning"
