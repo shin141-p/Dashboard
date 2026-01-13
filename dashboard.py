@@ -345,8 +345,8 @@ h1, h2, h3 {
     import datetime
 
     # Defaults
-    default_start = datetime.time(23, 30)
-    default_end = datetime.time(7, 30)
+    default_start = datetime.time(23, 0)
+    default_end = datetime.time(6, 30)
 
     # --- Settings Logic ---
     # We need values for calculation regardless of current page
@@ -359,20 +359,26 @@ h1, h2, h3 {
         st.session_state.target_sleep_duration = 7.5
 
     if page == "設定":
-        st.subheader("睡眠スコア設定")
-        st.write("推奨される睡眠時間帯を設定してください。")
+        st.subheader("睡眠時間帯設定")
+        st.write("理想の睡眠時間帯を設定してください。")
         
         # Update session state via widget keys
         # Set value kwarg even with key to ensure default applies if key is new
-        st.time_input("睡眠開始目標時間 (Target Start)", value=default_start, key="target_start_time")
-        st.time_input("睡眠終了目標時間 (Target End)", value=default_end, key="target_end_time")
+        st.time_input("理想の睡眠開始時間", value=default_start, key="target_start_time")
+        st.time_input("理想の睡眠終了時間", value=default_end, key="target_end_time")
         
-        st.subheader("目標値設定")
-        st.number_input("理想の睡眠時間 (時間)", min_value=4.0, max_value=12.0, value=7.5, step=0.5, key="target_sleep_duration", help="睡眠負債の計算やグラフの目標線に使用されます。")
+        st.subheader("目標睡眠時間設定")
+        st.write("ここで設定した時間を基準に、毎日の睡眠負債を算出します。")
+        val = st.number_input("理想の睡眠時間", min_value=4.0, max_value=12.0, value=7.5, step=0.25, key="target_sleep_duration", help="睡眠負債の計算やグラフの目標線に使用されます。")
+        # Display formatted conversion
+        total_minutes = int(round(val * 60))
+        h_val = total_minutes // 60
+        m_val = total_minutes % 60
+        st.write(f"設定値: **{h_val}時間 {m_val:02d}分**")
 
     if page == "データ入力":
         st.subheader("データアップロード")
-        st.write("CSVファイルをアップロードしてデータを更新します。形式は `data_tent.csv` と同じである必要があります。")
+        st.write("CSVファイルをアップロードしてデータを更新します。形式は下部から入力するものと同じである必要があります。")
         
         # Download Button
         with open(DATA_FILE, "rb") as file:
@@ -411,7 +417,7 @@ h1, h2, h3 {
 
         # --- Manual Data Entry Form ---
         st.write("---")
-        st.subheader("手動データ入力")
+        st.subheader("データ入力")
         st.write("日々のデータを手動で追加します。")
 
         with st.form("manual_entry_form"):
@@ -563,8 +569,10 @@ h1, h2, h3 {
                 dates = []
                 bases = []
                 heights = []
-                colors = []
-                texts = []
+                
+                # Data for Updatemenus
+                metrics_list = ["指定なし", "寝起きの良さ", "寝つきの良さ", "日中の眠気", "目が覚めた回数"]
+                metrics_data = {m: {'colors': [], 'texts': []} for m in metrics_list}
                 
                 BASE_HOUR = 19
                 
@@ -608,8 +616,9 @@ h1, h2, h3 {
                             dates.append("GAP") # Marker
                             bases.append(gap_base)
                             heights.append(gap_height)
-                            colors.append('#9E9E9E') # Darker Grey
-                            texts.append("期間外 (省略)")
+                            for m in metrics_list:
+                                metrics_data[m]['colors'].append('#9E9E9E')
+                                metrics_data[m]['texts'].append("期間外 (省略)")
                     
                     prev_date = current_date
 
@@ -624,34 +633,62 @@ h1, h2, h3 {
                         b_adj = adjust_hour(b_raw)
                         w_adj = adjust_hour(w_raw)
                         
-                        # current_date is used for X
-                        
-                        next_date = current_date + pd.Timedelta(days=1)
-                        
                         if w_adj < b_adj:
                             w_adj += 24.0
                         
                         limit = BASE_HOUR + 24.0
+
+                        # Pre-calc Logic for ALL metrics
+                        current_colors = {}
+                        current_texts = {}
+                        
+                        for m in metrics_list:
+                            c_code = '#FF9800' # Default Orange
+                            t_str = f"{row['就寝時間']} - {row['起床時間']}"
+                            
+                            if m != "指定なし":
+                                c_code = '#9E9E9E' # Default Grey
+                                val_label = "-"
+                                if m in row:
+                                    try:
+                                        val = float(row[m])
+                                        val_label = str(val).rstrip('0').rstrip('.') if val % 1 == 0 else f"{val:.1f}"
+                                        
+                                        if val <= 0.1: c_code = '#9E9E9E'
+                                        elif val < 1.5: c_code = '#FFE0B2'
+                                        elif val < 2.5: c_code = '#FFCC80'
+                                        elif val < 3.5: c_code = '#FFB74D'
+                                        elif val < 4.5: c_code = '#FFA726'
+                                        else: c_code = '#F57C00'
+                                    except:
+                                        pass
+                                t_str = f"{row['就寝時間']} - {row['起床時間']}<br>{m}: {val_label}"
+                            
+                            current_colors[m] = c_code
+                            current_texts[m] = t_str
                         
                         if w_adj <= limit:
                             dates.append(current_date)
                             bases.append(b_adj)
                             heights.append(w_adj - b_adj)
-                            colors.append('#FF9800')
-                            texts.append(f"{row['就寝時間']} - {row['起床時間']}")
+                            for m in metrics_list:
+                                metrics_data[m]['colors'].append(current_colors[m])
+                                metrics_data[m]['texts'].append(current_texts[m])
                         else:
                             # Split
                             dates.append(current_date)
                             bases.append(b_adj)
                             heights.append(limit - b_adj)
-                            colors.append('#FF9800')
-                            texts.append(f"{row['就寝時間']} - 19:00")
+                            for m in metrics_list:
+                                metrics_data[m]['colors'].append(current_colors[m])
+                                metrics_data[m]['texts'].append(current_texts[m])
                             
                             dates.append(next_date)
                             bases.append(BASE_HOUR) 
                             heights.append(w_adj - 24.0 - BASE_HOUR) 
-                            colors.append('#FF9800')
-                            texts.append(f"19:00 - {row['起床時間']}")
+                            for m in metrics_list:
+                                metrics_data[m]['colors'].append(current_colors[m])
+                                metrics_data[m]['texts'].append(current_texts[m])
                             
                     except Exception:
                         continue
@@ -694,6 +731,11 @@ h1, h2, h3 {
 
                 fig = go.Figure()
                 
+                # Add Legend for Colors (Optional but helpful)
+                # Since we color bars individually, we don't have a built-in legend for values.
+                # We can add dummy traces for legend?
+                # Let's keep it simple first as requested. Only bars change color.
+
                 # Add Recommended Time Highlight (Background)
                 # Note: Background shape on categorical axis might behave differently?
                 # Shapes use xref='paper' for full width or 'x' for coordinates.
@@ -726,16 +768,46 @@ h1, h2, h3 {
                     x=x_vals,
                     y=heights,
                     base=bases,
-                    marker_color=colors,
-                    hovertext=texts,
+                    marker_color=metrics_data['指定なし']['colors'],
+                    hovertext=metrics_data['指定なし']['texts'],
                     hovertemplate='日付: %{x}<br>時間: %{hovertext}<extra></extra>'
                 ))
 
                 tick_vals = list(range(BASE_HOUR, BASE_HOUR + 18))
                 tick_text = [str(t % 24) + ":00" for t in tick_vals]
                 
+                # Updatemenus
+                buttons = []
+                for m in metrics_list:
+                    buttons.append(dict(
+                        method='restyle',
+                        label=m,
+                        visible=True,
+                        args=[{
+                            'marker.color': [metrics_data[m]['colors']],
+                            'hovertext': [metrics_data[m]['texts']]
+                        }]
+                    ))
+                
+                updatemenus = [dict(
+                    buttons=buttons,
+                    direction='down',
+                    pad={'r': 10, 't': 10},
+                    showactive=True,
+                    x=1,
+                    xanchor='right',
+                    y=1.15,
+                    yanchor='top',
+                    bgcolor='white',
+                    bordercolor='#ddd',
+                    font=dict(size=11)
+                )]
+                
                 fig.update_layout(
-                    title=chart_title,
+                    title=dict(
+                        text=chart_title,
+                        font=dict(size=24)
+                    ),
                     yaxis=dict(
                         title='時間',
                         range=[BASE_HOUR + 17, BASE_HOUR], 
@@ -746,11 +818,17 @@ h1, h2, h3 {
                     ),
                     xaxis=xaxis_config,
                     showlegend=False,
-                    height=680
+                    updatemenus=updatemenus,
+                    margin=dict(t=80) 
                 )
                 
                 fig = update_chart_layout(fig)
-                fig.update_layout(height=680)
+                
+                if not compact_view:
+                     fig.update_layout(height=690)
+                else:
+                     # User requested to match size with Selected Period
+                     fig.update_layout(height=690)
 
                 return fig
 
@@ -1270,7 +1348,7 @@ h1, h2, h3 {
                      
                      return update_chart_layout(fig)
 
-                def create_reference_sleep_chart():
+                def create_reference_sleep_chart(color_metric='寝起きの良さ'):
                      # Visualize sleep with Base 19:00 (19:00 Top -> 19:00 Next Day Bottom)
                      # Logic:
                      # Map hours to 19..43 range.
@@ -1286,8 +1364,10 @@ h1, h2, h3 {
                      dates = []
                      bases = []
                      heights = []
-                     colors = []
-                     texts = []
+                     
+                     # Data for Updatemenus
+                     metrics_list = ["指定なし", "寝起きの良さ", "寝つきの良さ", "日中の眠気", "目が覚めた回数"]
+                     metrics_data = {m: {'colors': [], 'texts': []} for m in metrics_list}
                      
                      BASE_HOUR = 19
                      
@@ -1323,36 +1403,66 @@ h1, h2, h3 {
                              # If w_adj > BASE_HOUR + 24 (43.0):
                              # Split!
                              
-                             limit = BASE_HOUR + 24.0
+
                              
+                             limit = BASE_HOUR + 24.0
+
+                             # Pre-calc Logic for ALL metrics
+                             # Store temporarily
+                             current_colors = {}
+                             current_texts = {}
+                             
+                             metrics_list = ["指定なし", "寝起きの良さ", "寝つきの良さ", "日中の眠気", "目が覚めた回数"]
+                             
+                             for m in metrics_list:
+                                 c_code = '#FF9800' # Default
+                                 t_str = f"{row['就寝時間']} - {row['起床時間']}"
+                                 
+                                 if m != "指定なし":
+                                     c_code = '#9E9E9E' # Default Grey
+                                     val_label = "-"
+                                     if m in row:
+                                         try:
+                                             val = float(row[m])
+                                             val_label = str(val).rstrip('0').rstrip('.') if val % 1 == 0 else f"{val:.1f}"
+                                             
+                                             if val <= 0.1: c_code = '#9E9E9E'
+                                             elif val < 1.5: c_code = '#FFE0B2'
+                                             elif val < 2.5: c_code = '#FFCC80'
+                                             elif val < 3.5: c_code = '#FFB74D'
+                                             elif val < 4.5: c_code = '#FFA726'
+                                             else: c_code = '#F57C00'
+                                         except:
+                                             pass
+                                     t_str = f"{row['就寝時間']} - {row['起床時間']}<br>{m}: {val_label}"
+                                 
+                                 current_colors[m] = c_code
+                                 current_texts[m] = t_str
+
+                             # Add to global lists (Split logic)
                              if w_adj <= limit:
-                                 # Fits in one day (e.g. 23:00 [23] -> 07:00 [31])
                                  dates.append(current_date)
                                  bases.append(b_adj)
                                  heights.append(w_adj - b_adj)
-                                 colors.append('#FF9800')
-                                 texts.append(f"{row['就寝時間']} - {row['起床時間']}")
+                                 for m in metrics_list:
+                                     metrics_data[m]['colors'].append(current_colors[m])
+                                     metrics_data[m]['texts'].append(current_texts[m])
                              else:
-                                 # Split
-                                 # Segment 1: Bed to Limit (Date N)
+                                 # Split 1
                                  dates.append(current_date)
                                  bases.append(b_adj)
                                  heights.append(limit - b_adj)
-                                 colors.append('#FF9800')
-                                 texts.append(f"{row['就寝時間']} - 19:00")
+                                 for m in metrics_list:
+                                     metrics_data[m]['colors'].append(current_colors[m])
+                                     metrics_data[m]['texts'].append(current_texts[m])
                                  
-                                 # Segment 2: Base to Wake (Date N+1)
+                                 # Split 2
                                  dates.append(next_date)
-                                 bases.append(BASE_HOUR) # Start at 19.0 (Top)
-                                 heights.append(w_adj - 24.0 - BASE_HOUR) # Remainder
-                                 # Wait, w_adj is e.g. 44 (20:00 next day).
-                                 # We want 19:00 -> 20:00.
-                                 # 19.0 to 20.0 (on chart scale 19..43).
-                                 # w_adj - 24 = 20.
-                                 # height = 20 - 19 = 1. Correct.
-                                 colors.append('#FF9800')
-                                 texts.append(f"19:00 - {row['起床時間']}")
-                                 
+                                 bases.append(BASE_HOUR)
+                                 heights.append(w_adj - 24.0 - BASE_HOUR)
+                                 for m in metrics_list:
+                                     metrics_data[m]['colors'].append(current_colors[m])
+                                     metrics_data[m]['texts'].append(current_texts[m])
                          except Exception:
                              continue
 
@@ -1369,25 +1479,6 @@ h1, h2, h3 {
                          
                          ts_adj = adjust_hour(ts_raw)
                          te_adj = adjust_hour(te_raw)
-                         
-                         # Check if target wraps (e.g. 23:00 to 07:00)
-                         # If te_adj < ts_adj, add 24 to te_adj? 
-                         # adjust_hour already maps 07:00 to 31.0 (7+24).
-                         # adjust_hour maps 23:00 to 23.0.
-                         # exact logic: 
-                         # 23:00 -> 23 >= 19 -> 23.0
-                         # 07:00 -> 7 < 19 -> 31.0
-                         # So 23.0 to 31.0. Correct.
-                         
-                         # If user sets 01:00 to 09:00?
-                         # 01:00 -> 25.0
-                         # 09:00 -> 33.0
-                         # Correct.
-                         
-                         # If user sets 09:00 to 11:00?
-                         # 09:00 -> 33.0
-                         # 11:00 -> 35.0
-                         # Correct.
                          
                          # Ensure te_adj > ts_adj (handle basic wrap if needed, though adjust_hour usually handles day wrap for <19h)
                          if te_adj < ts_adj:
@@ -1408,10 +1499,11 @@ h1, h2, h3 {
                          x=dates,
                          y=heights,
                          base=bases,
-                         marker_color=colors,
-                         hovertext=texts,
+                         marker_color=metrics_data['指定なし']['colors'],
+                         hovertext=metrics_data['指定なし']['texts'],
                          hovertemplate='日付: %{x|%m/%d}<br>時間: %{hovertext}<extra></extra>'
                      ))
+
 
                      # Create tick labels 19, 20... 12 (next day)
                      # Range 19..36 (17 hours)
@@ -1428,12 +1520,44 @@ h1, h2, h3 {
                          range_x = None
 
                      
+                     # Updatemenus
+                     buttons = []
+                     for m in metrics_list:
+                         buttons.append(dict(
+                             method='restyle',
+                             label=m,
+                             visible=True,
+                             args=[{
+                                 'marker.color': [metrics_data[m]['colors']],
+                                 'hovertext': [metrics_data[m]['texts']]
+                             }]
+                         ))
+                     
+                     updatemenus = [dict(
+                         buttons=buttons,
+                         direction='down',
+                         pad={'r': 10, 't': 10},
+                         showactive=True,
+                         x=1,
+                         xanchor='right',
+                         y=1.15,
+                         yanchor='top',
+                         bgcolor='white',
+                         bordercolor='#ddd',
+                         font=dict(size=11)
+                     )]
+
                      # Apply common layout first (which sets default height=320)
                      fig = update_chart_layout(fig)
                      
                      # Then overwrite with specific settings
+                     # Then overwrite with specific settings
                      fig.update_layout(
-                         title='睡眠チャート (19時～12時)',
+                         title=dict(
+                             text='睡眠チャート',
+                             font=dict(size=24) # Increase font size
+                         ),
+                         # Annotation removed as requested
                          yaxis=dict(
                              title='時間',
                              range=[BASE_HOUR + 17, BASE_HOUR], # 36 (Bottom) -> 19 (Top)
@@ -1448,7 +1572,9 @@ h1, h2, h3 {
                              tickangle=-45,
                              range=range_x # Set initial zoom
                          ),
+                         updatemenus=updatemenus,
                          showlegend=False,
+                         margin=dict(t=80),
                          height=690
                      )
                      
